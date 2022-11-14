@@ -36,9 +36,11 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   late GoogleSignIn? _googleSignIn;
+  late GoogleSignIn? _googleSignInAppFile;
   late Dio _dio;
   late ValueNotifier<bool> _isUploading;
   late ValueNotifier<double> _progress;
+  late ValueNotifier<bool> _isSignedIn;
 
   GoogleSignInAccount? _account;
 
@@ -47,6 +49,11 @@ class _MyHomePageState extends State<MyHomePage> {
     _googleSignIn = GoogleSignIn.standard(
       scopes: [kGoogleSignInDriveScope],
     );
+    _googleSignInAppFile = GoogleSignIn.standard(scopes: [
+      kGoogleSignInDriveFileScope,
+      kGoogleSignInDriveResourceScope,
+    ]);
+    _initializeIsSignedIn();
     _dio = Dio(
       BaseOptions(
         baseUrl: 'https://www.googleapis.com',
@@ -109,6 +116,13 @@ class _MyHomePageState extends State<MyHomePage> {
               },
               child: const Text('Upload file'),
             ),
+            ElevatedButton(
+              onPressed: () async {
+                await _signInAppFile();
+                await _upload();
+              },
+              child: const Text('Upload app file'),
+            ),
             ValueListenableBuilder<bool>(
               valueListenable: _isUploading,
               builder: (context, isUploading, _) => isUploading
@@ -120,21 +134,46 @@ class _MyHomePageState extends State<MyHomePage> {
                     )
                   : const SizedBox(),
             ),
-            if (_account != null)
-              ElevatedButton(
-                onPressed: () async {
-                  await _signOut();
-                },
-                child: const Text('Sign Out'),
-              ),
+            ValueListenableBuilder<bool>(
+              valueListenable: _isSignedIn,
+              builder: (context, isSignedIn, child) {
+                if (isSignedIn) {
+                  return ElevatedButton(
+                    onPressed: () async {
+                      await _signOut();
+                    },
+                    child: const Text('Sign Out'),
+                  );
+                } else {
+                  return const SizedBox();
+                }
+              },
+            ),
           ],
         ),
       ),
     );
   }
 
+  void _initializeIsSignedIn() async {
+    _isSignedIn = ValueNotifier(false);
+    _isSignedIn.value = await _googleSignIn!.isSignedIn() ||
+        await _googleSignInAppFile!.isSignedIn();
+  }
+
   Future<void> _signIn() async {
     _account = await _googleSignIn!.signIn();
+    if (_account == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sign in Canceled or Failed')));
+    } else {
+      _dio.options.headers.addAll(await _account!.authHeaders);
+      setState(() {});
+    }
+  }
+
+  Future<void> _signInAppFile() async {
+    _account = await _googleSignInAppFile!.signIn();
     if (_account == null) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Sign in Canceled or Failed')));
@@ -187,7 +226,10 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> _signOut() async {
     await _googleSignIn?.disconnect();
     await _googleSignIn?.signOut();
+    await _googleSignInAppFile?.disconnect();
+    await _googleSignInAppFile?.signOut();
     _dio.options.headers = {};
+    _isSignedIn.value = false;
     setState(() {
       _account = null;
     });
