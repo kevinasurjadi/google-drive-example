@@ -1,9 +1,12 @@
 import 'dart:developer';
+import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_lorem/flutter_lorem.dart';
 import 'package:google_drive_example/constant.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:path/path.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 void main() {
@@ -36,24 +39,21 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   late GoogleSignIn? _googleSignIn;
-  late GoogleSignIn? _googleSignInAppFile;
   late Dio _dio;
   late ValueNotifier<bool> _isUploading;
-  late ValueNotifier<double> _progress;
-  late ValueNotifier<bool> _isSignedIn;
+  late ValueNotifier<double> _uploadProgress;
+  late ValueNotifier<bool> _isDownloading;
+  late ValueNotifier<double> _downloadProgress;
+  late ValueNotifier<String?> _fileId;
 
   GoogleSignInAccount? _account;
 
   @override
   void initState() {
-    _googleSignIn = GoogleSignIn.standard(
-      scopes: [kGoogleSignInDriveScope],
-    );
-    _googleSignInAppFile = GoogleSignIn.standard(scopes: [
+    _googleSignIn = GoogleSignIn.standard(scopes: [
       kGoogleSignInDriveFileScope,
       kGoogleSignInDriveResourceScope,
     ]);
-    _initializeIsSignedIn();
     _dio = Dio(
       BaseOptions(
         baseUrl: 'https://www.googleapis.com',
@@ -87,7 +87,10 @@ class _MyHomePageState extends State<MyHomePage> {
       },
     ));
     _isUploading = ValueNotifier(false);
-    _progress = ValueNotifier(0);
+    _uploadProgress = ValueNotifier(0);
+    _isDownloading = ValueNotifier(false);
+    _downloadProgress = ValueNotifier(0);
+    _fileId = ValueNotifier(null);
     super.initState();
   }
 
@@ -95,7 +98,10 @@ class _MyHomePageState extends State<MyHomePage> {
   void dispose() {
     _signOut();
     _isUploading.dispose();
-    _progress.dispose();
+    _uploadProgress.dispose();
+    _isDownloading.dispose();
+    _downloadProgress.dispose();
+    _fileId.dispose();
     super.dispose();
   }
 
@@ -111,74 +117,57 @@ class _MyHomePageState extends State<MyHomePage> {
           children: [
             ElevatedButton(
               onPressed: () async {
-                await _signIn();
+                await _signIn(context);
                 await _upload();
+                await _signOut();
               },
               child: const Text('Upload file'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                await _signInAppFile();
-                await _upload();
-              },
-              child: const Text('Upload app file'),
             ),
             ValueListenableBuilder<bool>(
               valueListenable: _isUploading,
               builder: (context, isUploading, _) => isUploading
                   ? ValueListenableBuilder<double>(
-                      valueListenable: _progress,
+                      valueListenable: _uploadProgress,
                       builder: (context, progress, _) {
                         return Text('Uploading your data...${progress * 100}%');
                       },
                     )
                   : const SizedBox(),
             ),
-            ValueListenableBuilder<bool>(
-              valueListenable: _isSignedIn,
-              builder: (context, isSignedIn, child) {
-                if (isSignedIn) {
+            ValueListenableBuilder<String?>(
+                valueListenable: _fileId,
+                builder: (context, value, child) {
                   return ElevatedButton(
                     onPressed: () async {
-                      await _signOut();
+                      if (value != null) {
+                        await _signIn(context);
+                        await _download(value);
+                        await _signOut();
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('You must upload file first!'),
+                          ),
+                        );
+                      }
                     },
-                    child: const Text('Sign Out'),
+                    child: const Text('Download file'),
                   );
-                } else {
-                  return const SizedBox();
-                }
-              },
-            ),
+                }),
           ],
         ),
       ),
     );
   }
 
-  void _initializeIsSignedIn() async {
-    _isSignedIn = ValueNotifier(false);
-    _isSignedIn.value = await _googleSignIn!.isSignedIn() ||
-        await _googleSignInAppFile!.isSignedIn();
-  }
-
-  Future<void> _signIn() async {
+  Future<void> _signIn(context) async {
     _account = await _googleSignIn!.signIn();
     if (_account == null) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Sign in Canceled or Failed')));
     } else {
-      _dio.options.headers.addAll(await _account!.authHeaders);
-      setState(() {});
-    }
-  }
-
-  Future<void> _signInAppFile() async {
-    _account = await _googleSignInAppFile!.signIn();
-    if (_account == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sign in Canceled or Failed')));
-    } else {
-      _dio.options.headers.addAll(await _account!.authHeaders);
+      var authHeaders = await _account!.authHeaders;
+      _dio.options.headers.addAll(authHeaders);
       setState(() {});
     }
   }
@@ -209,15 +198,43 @@ class _MyHomePageState extends State<MyHomePage> {
 
     var fileToUpload = lorem();
     var uploadUrl = metaResult.headers.value('Location');
-    await _dio.put(
+    var response = await _dio.put(
       uploadUrl!,
       options: Options(headers: {'content-length': fileToUpload.length}),
       data: fileToUpload,
       onSendProgress: (count, total) {
         log('count: $count, total: $total');
-        _progress.value = count / total;
+        _uploadProgress.value = count / total;
         if (count / total == 1) {
           _isUploading.value = false;
+        }
+      },
+    );
+    _fileId.value = response.data['id'];
+  }
+
+  Future<void> _download(String fileId) async {
+    _isDownloading.value = true;
+    var getFileResult = await _dio.get(
+      '/drive/v3/files/$fileId',
+      queryParameters: {
+        'fields':
+            'id,name,kind,mimeType,description,properties,appProperties,spaces,createdTime,modifiedTime,size'
+      },
+    );
+    log('$getFileResult');
+
+    String path = join((await getTemporaryDirectory()).path, 'sbcrypto.txt');
+    await _dio.download(
+      '/drive/v3/files/$fileId',
+      path,
+      queryParameters: {'alt': 'media'},
+      options: Options(headers: {HttpHeaders.acceptEncodingHeader: '*'}),
+      onReceiveProgress: (count, total) {
+        log('count: $count, total: $total');
+        _downloadProgress.value = count / total;
+        if (count / total == 1) {
+          _isDownloading.value = false;
         }
       },
     );
@@ -226,10 +243,7 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> _signOut() async {
     await _googleSignIn?.disconnect();
     await _googleSignIn?.signOut();
-    await _googleSignInAppFile?.disconnect();
-    await _googleSignInAppFile?.signOut();
     _dio.options.headers = {};
-    _isSignedIn.value = false;
     setState(() {
       _account = null;
     });

@@ -33,6 +33,8 @@ dependencies:
     sdk: flutter
   flutter_lorem: ^2.0.0
   google_sign_in: ^5.4.2
+  path: ^1.8.0
+  path_provider: ^2.0.11
   uuid: ^3.0.6
 
 dev_dependencies:
